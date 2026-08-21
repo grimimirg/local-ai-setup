@@ -282,3 +282,122 @@ After updating your configuration (`source ~/.zshrc`), you can start coding with
 ```bash
 crush-local
 ```
+
+---
+
+# Advanced: GPU Acceleration with CUDA
+
+By default, `llama.cpp` runs inference entirely on the CPU. If you have a CUDA-capable NVIDIA GPU, you can offload transformer layers to GPU VRAM using the `-ngl` flag. Even partial GPU offloading significantly reduces **Time To First Token (TTFT)** and improves overall throughput compared to a pure CPU setup.
+
+---
+
+## Prerequisites: Installing the CUDA Toolkit
+
+The NVIDIA CUDA Toolkit (`nvcc` compiler + runtime libraries) must be present on your system before recompiling `llama.cpp` with GPU support.
+
+### Arch Linux / CachyOS
+
+The toolkit is packaged in the official Arch repositories and does not interfere with your existing NVIDIA display drivers:
+
+```bash
+sudo pacman -S cuda
+```
+
+Arch installs CUDA under `/opt/cuda`. Add the binaries to your shell environment by appending these lines to `~/.zshrc` or `~/.bashrc`:
+
+```bash
+export PATH="/opt/cuda/bin:$PATH"
+export LD_LIBRARY_PATH="/opt/cuda/lib64:$LD_LIBRARY_PATH"
+```
+
+Reload your shell configuration:
+
+```bash
+source ~/.zshrc   # or source ~/.bashrc
+```
+
+### Debian / Ubuntu
+
+Use the official NVIDIA installer for your distribution from the [CUDA Downloads page](https://developer.nvidia.com/cuda-downloads). Select the `deb (network)` method for the cleanest integration. After installation the toolkit is typically located at `/usr/local/cuda`.
+
+### Verifying the Installation
+
+On any distribution, confirm that `nvcc` is accessible:
+
+```bash
+nvcc --version
+```
+
+---
+
+## Recompiling `llama.cpp` with CUDA Support
+
+With the CUDA toolkit installed and `nvcc` in your `PATH`, remove the previous CPU-only build and recompile with the `GGML_CUDA` flag enabled:
+
+```bash
+cd llama.cpp
+
+# Remove the previous CPU-only build directory
+rm -rf build
+
+# Configure CMake with CUDA support
+cmake -B build -DGGML_CUDA=ON
+
+# Compile using all available physical CPU cores
+cmake --build build --config Release -j$(nproc)
+```
+
+The resulting `llama-server` and `llama-cli` binaries in `build/bin/` will now support GPU layer offloading via the `-ngl` parameter.
+
+---
+
+## Offloading Layers to GPU (`-ngl`)
+
+The `-ngl` parameter (also accepted as `--gpu-layers` or `--n-gpu-layers`) controls how many transformer layers are loaded into GPU VRAM. Any layers beyond that limit fall back to system RAM and CPU processing.
+
+**How to calibrate the value:**
+* Set `-ngl` to the model's total layer count for a **full offload** — only feasible if the entire model fits within your available VRAM.
+* Use a **partial value** if the model is larger than your VRAM. `llama-server` logs exact VRAM allocation at startup, so you can tune this incrementally.
+* Start conservatively, observe VRAM usage in the server logs, and increase until you approach your GPU's memory limit.
+
+**Example command with partial GPU offloading:**
+
+```bash
+/path/to/llama.cpp/build/bin/llama-server \
+  -m ~/models/your-model.gguf \
+  -t $(nproc) \
+  -c 32768 \
+  -ngl 20 \
+  --port 8080
+```
+
+**Updated shell alias:**
+
+```bash
+alias llama-server-gpu="/path/to/llama.cpp/build/bin/llama-server -m ~/models/your-model.gguf -t $(nproc) -c 32768 -ngl 20 --port 8080"
+```
+
+> **Note:** The `-t` parameter should still be set to your physical CPU core count (not logical threads), as it governs the CPU threads used for any layers that remain on the CPU side.
+
+---
+
+## Storing Models on a Secondary Drive
+
+`.gguf` files are fully **self-contained** — no sidecar files or additional directories are created alongside them. They can be stored on any drive or mount point without affecting functionality.
+
+To use a secondary storage device for your models:
+
+```bash
+# Create a dedicated directory on the secondary drive
+mkdir -p /mnt/storage/models
+
+# Download models directly to that location
+cd /mnt/storage/models
+curl -L -O https://huggingface.co/<repo>/<model>.gguf
+```
+
+Pass the full path via the `-m` flag and update your aliases to point to the new location:
+
+```bash
+alias llama-server-gpu="/path/to/llama.cpp/build/bin/llama-server -m /mnt/storage/models/your-model.gguf -t $(nproc) -c 32768 -ngl 20 --port 8080"
+```
