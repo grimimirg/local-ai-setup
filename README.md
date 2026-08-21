@@ -25,6 +25,16 @@
   - [Recompiling llama.cpp with CUDA Support](#recompiling-llamacpp-with-cuda-support)
   - [Offloading Layers to GPU (`-ngl`)](#offloading-layers-to-gpu--ngl)
   - [Storing Models on a Secondary Drive](#storing-models-on-a-secondary-drive)
+- [Web Search Integration via Tool Proxy](#web-search-integration-via-tool-proxy)
+  - [1. Why the Tool Proxy Approach](#1-why-the-tool-proxy-approach)
+  - [2. Architecture Overview](#2-architecture-overview)
+  - [3. How Tool Calling Works](#3-how-tool-calling-works)
+  - [4. Installing Dependencies](#4-installing-dependencies)
+  - [5. The Proxy Script](#5-the-proxy-script)
+  - [6. System Prompt & When the Model Searches](#6-system-prompt--when-the-model-searches)
+  - [7. Connecting Aider and Crush to the Proxy](#7-connecting-aider-and-crush-to-the-proxy)
+  - [8. Shell Aliases & Full Stack Startup](#8-shell-aliases--full-stack-startup)
+  - [9. Alternative Search Backends](#9-alternative-search-backends)
 - [Technical Concept Reference & FAQs](#technical-concept-reference--faqs)
 - [Performance Factors & Latency Troubleshooting](#performance-factors--latency-troubleshooting)
   - [Common Errors & Fixes](#common-errors--fixes)
@@ -566,6 +576,372 @@ Pass the full path via the `-m` flag and update your aliases to point to the new
 ```bash
 alias llama-server-gpu="/path/to/llama.cpp/build/bin/llama-server -m /mnt/storage/models/your-model.gguf -t $(nproc) -c 32768 -ngl 20 --port 8080"
 ```
+
+---
+
+# Web Search Integration via Tool Proxy
+
+This section explains how to give the local LLM the ability to search the internet in real time, while keeping **Aider and Crush as the primary entry points** with no changes to how you use them day to day.
+
+---
+
+## 1. Why the Tool Proxy Approach
+
+`llama-server` exposes an OpenAI-compatible API but **does not execute tool calls** — it only generates the JSON that describes which tool should be called and with which arguments. Something external must intercept that output, run the actual search, and feed the results back to the model.
+
+There are several ways to wire this up, but the **Tool Proxy** is the most practical for this setup because:
+
+* It works **identically for both Aider and Crush** — both clients simply point to a different port.
+* It requires **zero changes** to the Aider or Crush configuration beyond the backend URL.
+* It is a bare-metal Python process — no containers, no daemons, no system-level services.
+* You can swap the search backend (DuckDuckGo, Brave, Tavily, SearXNG) by editing a single function.
+
+---
+
+## 2. Architecture Overview
+
+The proxy sits transparently between the clients and `llama-server`:
+
+```
+         Aider / Crush
+             │
+             │  HTTP  :8081
+             ▼
+┌─────────────────────────────┐
+│       Tool Proxy            │
+│  (Python / FastAPI)         │
+│                             │
+│  1. Injects web_search tool │
+│  2. Executes searches       │
+│  3. Feeds results back      │
+└────────────┬────────────────┘
+             │  HTTP  :8080         ┌──────────────────┐
+             ▼                      │  DuckDuckGo API  │
+      llama-server        ◄──────►  │  (or Brave, etc.)│
+   (model inference)                └──────────────────┘
+```
+
+From the perspective of Aider and Crush, nothing has changed — they talk to an OpenAI-compatible endpoint. The proxy handles all the complexity of the tool call loop internally.
+
+---
+
+## 3. How Tool Calling Works
+
+Without a proxy, a conversation ends at the model's first reply. With the proxy active, the flow becomes a multi-turn agentic loop:
+
+```
+You (in Aider or Crush): "Search online for the latest llama.cpp release."
+        │
+        ▼
+[Proxy] forwards request to llama-server
+        + injects the web_search tool definition
+        │
+        ▼
+[llama-server] model decides to call web_search
+        │  returns: { tool_call: web_search("llama.cpp latest release") }
+        ▼
+[Proxy] intercepts the tool call
+        → executes DuckDuckGo search
+        → gets top 5 results (title, URL, snippet)
+        │
+        ▼
+[Proxy] sends results back to llama-server as a tool message
+        │
+        ▼
+[llama-server] model reads the results, composes final answer
+        │
+        ▼
+[Proxy] forwards final text response to Aider / Crush
+```
+
+The loop repeats up to a configurable maximum (default: 6 iterations) in case the model issues multiple consecutive tool calls.
+
+> [!NOTE]
+> The model is **not forced** to always call the tool. It makes its own decision based on the user message and the system prompt. See [Section 6](#6-system-prompt--when-the-model-searches) for details on controlling this behaviour.
+
+---
+
+## 4. Installing Dependencies
+
+The proxy requires three Python packages. Install them into an isolated environment to avoid conflicts with the Aider installation:
+
+```bash
+uv venv ~/.local/share/llama-proxy/.venv --python 3.12
+source ~/.local/share/llama-proxy/.venv/bin/activate
+pip install fastapi uvicorn httpx duckduckgo-search
+deactivate
+```
+
+Alternatively, if you prefer a single global install managed by `uv`:
+
+```bash
+uv tool install --python 3.12 uvicorn
+uv pip install fastapi httpx duckduckgo-search
+```
+
+---
+
+## 5. The Proxy Script
+
+Create the file `~/.local/bin/llama-search-proxy.py`:
+
+```python
+#!/usr/bin/env python3
+"""
+OpenAI-compatible Tool Proxy for llama-server.
+Adds automatic web_search tool execution between Aider/Crush and llama-server.
+
+Listen port : 8081  (clients point here)
+Backend port: 8080  (llama-server)
+"""
+
+import json
+import asyncio
+import httpx
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from duckduckgo_search import DDGS
+
+BACKEND_URL  = "http://localhost:8080"
+PROXY_PORT   = 8081
+MAX_RESULTS  = 5
+MAX_LOOPS    = 6   # safeguard against infinite tool call chains
+
+app = FastAPI()
+
+# Tool definition sent to the model on every request
+SEARCH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "web_search",
+        "description": (
+            "Search the internet for up-to-date information, recent events, "
+            "software releases, documentation, or anything not reliably covered "
+            "by training data."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query"}
+            },
+            "required": ["query"],
+        },
+    },
+}
+
+# System prompt injected when the conversation has no existing system message
+SEARCH_SYSTEM_PROMPT = {
+    "role": "system",
+    "content": (
+        "You have access to a web_search tool. "
+        "Use it whenever the user asks you to search online, or when the question "
+        "involves current events, latest software versions, recent releases, or "
+        "any information that may have changed after your training cutoff. "
+        "When in doubt about the freshness of your knowledge, search."
+    ),
+}
+
+
+def do_search(query: str) -> str:
+    """Execute a DuckDuckGo search and return formatted results."""
+    try:
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=MAX_RESULTS))
+        if not results:
+            return "No results found for this query."
+        parts = [
+            f"[{i}] {r['title']}\nURL: {r['href']}\n{r['body']}"
+            for i, r in enumerate(results, 1)
+        ]
+        return "\n\n".join(parts)
+    except Exception as e:
+        return f"Search error: {e}"
+
+
+@app.post("/v1/chat/completions")
+async def chat_completions(request: Request):
+    body = await request.json()
+
+    # Force non-streaming for the tool loop; the final response is returned in full
+    body["stream"] = False
+
+    # Inject web_search tool if not already present
+    existing_tools = {t.get("function", {}).get("name") for t in body.get("tools", [])}
+    if "web_search" not in existing_tools:
+        body.setdefault("tools", []).insert(0, SEARCH_TOOL)
+
+    # Inject system prompt if the conversation has none
+    messages = body.get("messages", [])
+    if not any(m.get("role") == "system" for m in messages):
+        body["messages"] = [SEARCH_SYSTEM_PROMPT] + messages
+
+    async with httpx.AsyncClient(timeout=300) as client:
+        for _ in range(MAX_LOOPS):
+            resp = await client.post(
+                f"{BACKEND_URL}/v1/chat/completions", json=body
+            )
+            data = resp.json()
+
+            choice     = data.get("choices", [{}])[0]
+            message    = choice.get("message", {})
+            tool_calls = message.get("tool_calls") or []
+
+            if not tool_calls:
+                # No tool call — the model produced a final text answer
+                return JSONResponse(data)
+
+            # Execute every tool call the model requested
+            body["messages"].append(message)
+            for tc in tool_calls:
+                fn_name = tc["function"]["name"]
+                fn_args = json.loads(tc["function"]["arguments"])
+
+                if fn_name == "web_search":
+                    result = await asyncio.get_event_loop().run_in_executor(
+                        None, do_search, fn_args.get("query", "")
+                    )
+                else:
+                    result = f"Unknown tool requested: {fn_name}"
+
+                body["messages"].append({
+                    "role":         "tool",
+                    "tool_call_id": tc["id"],
+                    "content":      result,
+                })
+
+    # MAX_LOOPS reached — return whatever the last response was
+    return JSONResponse(data)
+
+
+# Transparent passthrough for all other endpoints (/v1/models, /health, etc.)
+@app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def passthrough(path: str, request: Request):
+    async with httpx.AsyncClient(timeout=60) as client:
+        resp = await client.request(
+            method=request.method,
+            url=f"{BACKEND_URL}/{path}",
+            content=await request.body(),
+            headers={k: v for k, v in request.headers.items() if k.lower() != "host"},
+        )
+    return JSONResponse(resp.json(), status_code=resp.status_code)
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="127.0.0.1", port=PROXY_PORT, log_level="info")
+```
+
+Make the file executable:
+
+```bash
+chmod +x ~/.local/bin/llama-search-proxy.py
+```
+
+---
+
+## 6. System Prompt & When the Model Searches
+
+`llama-server` does not execute tool calls autonomously — it is the model itself that decides whether to issue a `web_search` call or answer directly from its training data. This decision is influenced by two factors: the **system prompt** and the **wording of your message**.
+
+The proxy script above already injects a system prompt that nudges the model toward proactive searching. The table below summarises the resulting behaviour:
+
+| User message | System prompt active | Expected behaviour |
+| :--- | :--- | :--- |
+| `"cerca online l'ultima versione di llama.cpp"` | Yes / No | ✅ Searches — explicit instruction overrides everything |
+| `"what is the latest llama.cpp release?"` | Yes | ✅ Likely searches — system prompt flags "latest versions" |
+| `"what is the latest llama.cpp release?"` | No | ⚠️ Uncertain — model may answer from training data |
+| `"write a Python function to merge two lists"` | Yes | ✅ Answers directly — no search needed or triggered |
+| `"explain how transformers work"` | Yes | ✅ Answers directly — well-covered by training data |
+
+**Key takeaway:** with the system prompt active, explicitly writing `"search online"`, `"cerca su internet"`, `"look up"`, or any equivalent phrasing in any language makes the search behaviour deterministic. The model will call `web_search` before composing its answer.
+
+> [!NOTE]
+> Local models (Qwen3, Qwen2.5-Coder) are less reliably autonomous than cloud models at deciding *when* to search unprompted. Relying on explicit phrasing combined with the system prompt gives consistent, predictable results without any performance overhead on requests that do not need a search.
+
+---
+
+## 7. Connecting Aider and Crush to the Proxy
+
+### Aider
+
+Point Aider to port `8081` (the proxy) instead of `8080` (llama-server directly). Add `--no-stream` because the proxy's tool loop resolves the response in full before returning it:
+
+```bash
+~/.local/bin/aider \
+  --openai-api-base http://localhost:8081/v1 \
+  --openai-api-key not-needed \
+  --model openai/qwen2.5-coder \
+  --no-stream
+```
+
+### Crush
+
+Edit `~/.config/crush/crush.json` and change `base_url` from port `8080` to `8081`:
+
+```json
+{
+  "$schema": "https://charm.land/crush.json",
+  "providers": {
+    "llama-local": {
+      "id": "local-qwen3.8",
+      "name": "local-qwen3.8",
+      "type": "openai-compat",
+      "base_url": "http://localhost:8081/v1",
+      "api_key": "not-needed",
+      "models": [
+        {
+          "id": "local-qwen3.8",
+          "name": "Qwen 3.8 Coder",
+          "context_window": 32768,
+          "default_max_tokens": 4096,
+          "can_reason": true,
+          "supports_tools": true
+        }
+      ]
+    }
+  }
+}
+```
+
+No other changes are needed. Crush will continue to work identically — it simply talks to the proxy instead of `llama-server` directly.
+
+---
+
+## 8. Shell Aliases & Full Stack Startup
+
+Add the following aliases alongside the existing ones in your `~/.bashrc` or `~/.zshrc`:
+
+```bash
+alias llama-proxy="source ~/.local/share/llama-proxy/.venv/bin/activate && python3 ~/.local/bin/llama-search-proxy.py"
+alias aider-web="~/.local/bin/aider --openai-api-base http://localhost:8081/v1 --openai-api-key not-needed --model openai/qwen2.5-coder --no-stream"
+alias crush-web="crush --provider llama-local --model local-qwen3.8"
+```
+
+The recommended startup sequence using three terminal tabs or a multiplexer such as `tmux`:
+
+```bash
+# Tab 1 — backend model server (unchanged)
+llama-coder
+
+# Tab 2 — search proxy
+llama-proxy
+
+# Tab 3 — your coding session
+aider-web   # or: crush-web
+```
+
+---
+
+## 9. Alternative Search Backends
+
+The `do_search()` function in the proxy script is the only part that needs to change when switching search providers. All other logic remains identical.
+
+| Backend | API Key | Privacy | Notes |
+| :--- | :--- | :--- | :--- |
+| **DuckDuckGo** (`duckduckgo-search`) | None | Medium | Default in this guide. No registration required. |
+| **Brave Search** | Yes (free tier: 2,000 req/mo) | High | Higher quality results. [Get key](https://api.search.brave.com/) |
+| **Tavily** | Yes (free tier: 1,000 req/mo) | Medium | Optimised for LLM consumption. [Get key](https://tavily.com/) |
+| **SearXNG** (self-hosted) | None | Maximum | Aggregates multiple engines locally. More complex to set up. |
 
 ---
 
