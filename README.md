@@ -1,7 +1,7 @@
 # Local AI Development Environment Setup
 
-**Complete Step-by-Step Deployment Guide: llama.cpp Backend & Aider CLI Frontend**  
-**Target OS:** Arch Linux / CachyOS & Debian/Ubuntu | **Hardware Spec:** High-Performance CPU Setup
+**Complete Step-by-Step Deployment Guide: llama.cpp Backend — Aider & Crush Frontends — GPU Acceleration**  
+**Target OS:** Arch Linux & Debian/Ubuntu | **Hardware:** CPU-only or hybrid CPU+GPU setups
 
 ---
 
@@ -18,7 +18,7 @@ This setup utilizes a decoupled client-server architecture designed for high eff
 
 To compile `llama.cpp` natively and prevent Python package conflicts (particularly on newer releases like Python 3.14), install the required build tools and package managers:
 
-### CachyOS / Arch Linux
+### Arch Linux
 ```bash
 sudo pacman -S base-devel cmake git python-uv
 ```
@@ -61,7 +61,7 @@ To prevent system-level Python conflicts and avoid compilation failures of under
 uv tool install --python 3.12 aider-chat
 
 # Ensure user binaries are present in your shell PATH
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc   # For Zsh (default on CachyOS)
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc   # For Zsh (default on Arch Linux)
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc  # For Bash (default on Debian)
 
 source ~/.zshrc || source ~/.bashrc
@@ -92,7 +92,7 @@ Model selection depends heavily on available System RAM or GPU VRAM. Quantizatio
 | **8 GB RAM** | 3B–7B Parameters | `Q4_K_M` | ~2.5–4.0 GB | Limit to `-c 4096` to avoid memory swapping |
 | **16 GB RAM** | 7B–8B Parameters | `Q5_K_M` / `Q6_K` | ~5.5–7.0 GB | Up to `-c 16384` (~1.5 GB allocated for KV Cache) |
 | **32 GB RAM** | 14B Parameters | `Q4_K_M` / `Q5_K_M` | ~9.0–11.0 GB | Up to `-c 32768` (~3.0 GB allocated for KV Cache) |
-| **64 GB RAM** *(Your Setup)* | 14B–32B Parameters | `Q6_K` / `Q8_0` | ~12.0–20.0 GB | Optimal: `-c 32768` or `-c 65536` with total stability |
+| **64 GB RAM** | 14B–32B Parameters | `Q6_K` / `Q8_0` | ~12.0–20.0 GB | Optimal: `-c 32768` or `-c 65536` with total stability |
 
 ---
 
@@ -100,7 +100,7 @@ Model selection depends heavily on available System RAM or GPU VRAM. Quantizatio
 
 ### Option A: Launching `llama-server` (Backend Service)
 ```bash
-/percorso/di/llama.cpp/build/bin/llama-server   -m ~/models/Qwen2.5-Coder-14B-Instruct-Q6_K.gguf   -t 8 -c 32768 --port 8080
+/path/to/llama.cpp/build/bin/llama-server   -m ~/models/Qwen2.5-Coder-14B-Instruct-Q6_K.gguf   -t $(nproc) -c 32768 --port 8080
 ```
 
 ### Option B: Launching `aider` (CLI Client)
@@ -110,54 +110,98 @@ Model selection depends heavily on available System RAM or GPU VRAM. Quantizatio
 
 ### Option C: Native Interactive CLI Chat (Without Aider or HTTP Server)
 ```bash
-/percorso/di/llama.cpp/build/bin/llama-cli   -m ~/models/Qwen2.5-Coder-14B-Instruct-Q6_K.gguf   -c 32768 -t 8 -cnv
+/path/to/llama.cpp/build/bin/llama-cli   -m ~/models/Qwen2.5-Coder-14B-Instruct-Q6_K.gguf   -c 32768 -t $(nproc) -cnv
 ```
 
 ### Recommended Shell Aliases
 Add these aliases to your `~/.bashrc` or `~/.zshrc`:
 
 ```bash
-alias llama-coder="./build/bin/llama-server -m ~/models/Qwen2.5-Coder-14B-Instruct-Q6_K.gguf -t 8 -c 32768 --port 8080"
+alias llama-coder="/path/to/llama.cpp/build/bin/llama-server -m ~/models/Qwen2.5-Coder-14B-Instruct-Q6_K.gguf -t $(nproc) -c 32768 --port 8080"
 alias aider-local="~/.local/bin/aider --openai-api-base http://localhost:8080/v1 --openai-api-key not-needed --model openai/qwen2.5-coder"
 ```
 
 ---
 
-## 7. Technical Concept Reference & FAQs
+## 7. Using `llama-cli` for On-Demand Queries
 
-### What is the `-c` (Context Window Size) parameter?
-It specifies the maximum number of tokens (1 token ≈ 3–4 characters) the model can hold in memory at once (`System Prompt` + `Chat History` + `Source Code` + `Model Output`).
+`llama-cli` is the lightweight alternative to the full server stack. It loads the model, answers your query, and exits — no persistent HTTP server required. This makes it ideal for quick one-off questions, scripting, or situations where you do not want to keep a server running in the background.
 
-**KV Cache Pre-allocation:** `llama.cpp` pre-allocates memory for the full context window upon startup to guarantee stability. On a 64 GB RAM setup, `-c 32768` reserves ~2.5 GB RAM. An application of 3,000 lines of code equals roughly 30,000–35,000 tokens, fitting comfortably inside a 32k context window.
+> **Trade-off:** Every invocation of `llama-cli` reloads the model from disk and reallocates the KV cache from scratch. If you plan to send multiple messages in sequence, the interactive mode (`-cnv`) is more efficient than re-launching the binary each time.
 
-### Where is the `.gguf` file specified?
-The `.gguf` path is passed exclusively to `llama-server` via the `-m` flag. Aider never accesses the model file directly.
+### Interactive Conversation Mode
 
-### Why use the model identifier `openai/qwen2.5-coder` in Aider?
-This string is a LiteLLM identifier used by Aider to configure its internal logic:
-* `openai/` tells Aider to send requests via the OpenAI API protocol over HTTP.
-* `qwen2.5-coder` informs Aider of the model family capabilities, optimizing its system prompts and code-editing strategy.
+Start a persistent back-and-forth chat session in the terminal:
+
+```bash
+/path/to/llama.cpp/build/bin/llama-cli \
+  -m ~/models/Qwen2.5-Coder-14B-Instruct-Q6_K.gguf \
+  -t $(nproc) -c 32768 \
+  -cnv
+```
+
+The `-cnv` flag enables conversation mode: the model retains the full chat history within the session and responds to each new input. Type your message and press Enter. To exit, send an empty line or press `Ctrl+C`.
+
+### Single-Shot Prompt (Non-Interactive)
+
+Send a single prompt and get the output directly in the terminal — useful for scripting or piping output to other tools:
+
+```bash
+/path/to/llama.cpp/build/bin/llama-cli \
+  -m ~/models/Qwen2.5-Coder-14B-Instruct-Q6_K.gguf \
+  -t $(nproc) -c 8192 \
+  -p "Write a Python function that merges two sorted lists."
+```
+
+The `-p` flag passes the prompt directly. The model prints its response to stdout and exits.
+
+### Piping a File as Input
+
+Inject the contents of a file directly into the prompt — useful for asking the model to explain, refactor, or review a specific file:
+
+```bash
+echo "Explain what this code does:" | cat - myfile.py | \
+  /path/to/llama.cpp/build/bin/llama-cli \
+  -m ~/models/Qwen2.5-Coder-14B-Instruct-Q6_K.gguf \
+  -t $(nproc) -c 32768 -p "$(cat)"
+```
+
+A simpler approach using command substitution:
+
+```bash
+/path/to/llama.cpp/build/bin/llama-cli \
+  -m ~/models/Qwen2.5-Coder-14B-Instruct-Q6_K.gguf \
+  -t $(nproc) -c 32768 \
+  -p "Refactor this Python code for readability:\n$(cat myfile.py)"
+```
+
+### With GPU Offloading
+
+If you compiled `llama.cpp` with CUDA support, add `-ngl` to offload layers to the GPU and significantly reduce response latency:
+
+```bash
+/path/to/llama.cpp/build/bin/llama-cli \
+  -m ~/models/Qwen2.5-Coder-14B-Instruct-Q6_K.gguf \
+  -t $(nproc) -c 32768 \
+  -ngl 20 \
+  -cnv
+```
+
+### Useful `llama-cli` Parameters at a Glance
+
+| Parameter | Description |
+| :--- | :--- |
+| `-m <path>` | Path to the `.gguf` model file |
+| `-t <n>` | Number of CPU threads (set to physical core count) |
+| `-c <n>` | Context window size in tokens |
+| `-p "<text>"` | Prompt string for single-shot mode |
+| `-cnv` | Enable interactive conversation mode |
+| `-ngl <n>` | Number of layers to offload to GPU (requires CUDA build) |
+| `-n <n>` | Maximum number of tokens to generate per response |
+| `--temp <f>` | Sampling temperature (e.g., `0.7`); lower = more deterministic |
+| `--no-display-prompt` | Suppress echoing the input prompt in the output (useful for scripts) |
 
 ---
-
-## 8. Performance Factors & Latency Troubleshooting (Why is it slow?)
-
-When asking Aider to read large files (e.g., `README.md` or source files), you may experience long delays before receiving the first token (*Time To First Token* / TTFT). The key performance variables are:
-
-* **Prompt Processing Overhead (TTFT):** Before generating text, `llama-server` must process and compute the attention matrix for all context tokens (System Prompt + Aider Repo Map + Target File). Reading a large file forces a massive initial evaluation phase.
-* **CPU Thread Tuning (`-t` Parameter):** Setting `-t` incorrectly causes severe performance degradation.
-  * **Rule:** Set `-t` equal to the number of **physical CPU cores** (e.g., `-t 8` on an 8-core CPU).
-  * **Avoid:** Setting `-t` to logical threads (Hyper-Threading / SMT) leads to CPU cache thrashing and slower prompt evaluation.
-* **System Memory Bandwidth (RAM Bottleneck):** LLM CPU inference is constrained by RAM speed (GB/s), not CPU clock rate. Dual-channel DDR5 provides significantly higher token generation speeds than DDR4. Full GPU offloading (via VRAM) is orders of magnitude faster than CPU RAM.
-* **Quantization Level Impact:** Heavy quantizations (`Q8_0` or `Q6_K`) require moving more data through system RAM per token compared to `Q4_K_M`.
-* **Aider's Auto Repo Map:** Aider uses `tree-sitter` to parse your Git repository and automatically sends a symbol map. In large projects, this inflates the token count sent to `llama-server` on the very first prompt.
-
-### Quick Diagnostic Checklist for Slow Responses
-1. Check the terminal running `llama-server` for metrics:
-   * `prompt eval time`: Indicates initial context processing speed.
-   * `eval time`: Indicates token generation speed (tokens/sec).
-2. Confirm `-t` matches your physical CPU cores (not logical threads).
-3. Note that subsequent questions on the same file/context are much faster because `llama-server` reuses the prompt cache.
 
 # Setup Guide: Crush (Charm) as an Alternative to Aider
 
@@ -185,7 +229,7 @@ This guide covers how to install, configure, and use **[Crush](https://github.co
 brew install charmbracelet/tap/crush
 ```
 
-#### Arch Linux / CachyOS (AUR)
+#### Arch Linux (AUR)
 ```bash
 yay -S crush-bin
 # or
@@ -267,8 +311,10 @@ Crush uses a JSON schema located in `~/.config/crush/crush.json` to define custo
 Ensure your `llama-server` is up and running on port `8080`:
 
 ```bash
-/percorso/di/llama.cpp/build/bin/llama-server   -m ~/models/Qwen2.5-Coder-14B-Instruct-Q6_K.gguf   -t 8 -c 32768 --port 8080
+/path/to/llama.cpp/build/bin/llama-server   -m ~/models/your-model.gguf   -t $(nproc) -c 32768 --port 8080
 ```
+
+> **Note:** The `-m` path and model ID in the `crush.json` config must refer to the same model. The example above and the JSON config in section 3 both target `Qwen3-8B`; replace the filename accordingly if you are using a different model.
 
 ### Step 2: Start Crush
 Launch Crush inside your project repository:
@@ -305,7 +351,7 @@ By default, `llama.cpp` runs inference entirely on the CPU. If you have a CUDA-c
 
 The NVIDIA CUDA Toolkit (`nvcc` compiler + runtime libraries) must be present on your system before recompiling `llama.cpp` with GPU support.
 
-### Arch Linux / CachyOS
+### Arch Linux
 
 The toolkit is packaged in the official Arch repositories and does not interfere with your existing NVIDIA display drivers:
 
@@ -379,8 +425,8 @@ The key insight is that **inference is sequential**: the model processes one lay
 | 7B–8B parameters | 32 layers | Llama-3.1-8B, Mistral-7B |
 | 8B (Qwen3 family) | **36 layers** | **Qwen3-8B** (8.2B params, reasoning + non-thinking modes) |
 | 14B parameters | 48 layers | Qwen2.5-Coder-14B, Phi-4-14B |
-| 32B parameters | 64 layers | Qwen2.5-Coder-32B, Llama-3.3-70B* |
-| 70B parameters | 80 layers | Llama-3.1-70B |
+| 32B parameters | 64 layers | Qwen2.5-Coder-32B |
+| 70B parameters | 80 layers | Llama-3.1-70B, Llama-3.3-70B |
 
 > *Layer counts vary between model families — Qwen3 models in particular use a different architecture than same-size Llama/Mistral variants. The exact value is always listed in the model's `config.json` on Hugging Face, or reported by `llama-server` at startup.
 
@@ -465,3 +511,118 @@ Pass the full path via the `-m` flag and update your aliases to point to the new
 ```bash
 alias llama-server-gpu="/path/to/llama.cpp/build/bin/llama-server -m /mnt/storage/models/your-model.gguf -t $(nproc) -c 32768 -ngl 20 --port 8080"
 ```
+
+---
+
+# Technical Concept Reference & FAQs
+
+### What is the `-c` (Context Window Size) parameter?
+It specifies the maximum number of tokens (1 token ≈ 3–4 characters) the model can hold in memory at once (`System Prompt` + `Chat History` + `Source Code` + `Model Output`).
+
+**KV Cache Pre-allocation:** `llama.cpp` pre-allocates memory for the full context window upon startup to guarantee stability. For example, `-c 32768` reserves roughly 2–3 GB of RAM depending on the model. Keep in mind that a 3,000-line codebase already amounts to ~30,000 tokens on its own — close to the 32k limit — leaving little headroom for system prompt, chat history, and model output. For heavy code-editing sessions consider a larger context window (e.g., `-c 65536`) if your available RAM allows.
+
+### Where is the `.gguf` file specified?
+The `.gguf` path is passed exclusively to `llama-server` via the `-m` flag. Neither Aider nor Crush accesses the model file directly — both communicate with the backend exclusively over HTTP.
+
+### Why use the model identifier `openai/qwen2.5-coder` in Aider?
+This string is a LiteLLM identifier used by Aider to configure its internal logic:
+* `openai/` tells Aider to send requests via the OpenAI API protocol over HTTP.
+* `qwen2.5-coder` informs Aider of the model family capabilities, optimizing its system prompts and code-editing strategy.
+
+### What is the difference between `llama-server` and `llama-cli`?
+* **`llama-server`** loads the model once and exposes a persistent HTTP API on a given port. It is designed to serve multiple requests over time and is what Aider and Crush connect to.
+* **`llama-cli`** is a standalone interactive terminal session. It loads the model, runs a single conversation, and exits. It does not expose any HTTP endpoint — use it for quick manual tests without setting up a server.
+
+### Can I run multiple models at the same time?
+Yes, by launching multiple `llama-server` instances on **different ports**, each loading a different model. You then point each client to the corresponding port. Keep in mind that each instance independently pre-allocates RAM for its model weights and KV cache, so available system memory is the limiting factor.
+
+### How do I verify that my GPU is actually being used?
+Two methods:
+1. **Check `llama-server` startup logs:** Look for a line such as `llm_load_tensors: offloaded X/Y layers to GPU`. If `X` is 0, no GPU offloading is active.
+2. **Monitor VRAM in real time:** Run `watch -n 1 nvidia-smi` in a separate terminal while `llama-server` is starting. You should see VRAM usage rise by the expected amount (number of offloaded layers × VRAM per layer).
+
+### What happens when the context window fills up during a conversation?
+When the total tokens (system prompt + history + new message) exceed the `-c` value, `llama-server` applies a **context shift** by default: it discards the oldest tokens in the conversation to make room for new ones. This can cause the model to "forget" earlier parts of the conversation. To disable this behavior and instead receive an explicit error (useful for debugging), pass `--no-context-shift` to `llama-server`. The solution is to either increase `-c` or start a new session.
+
+### Which model family is best suited for coding tasks?
+* **Qwen2.5-Coder** — purpose-built for code generation, completion, and explanation. Strong benchmark results on coding tasks across all sizes (3B to 32B).
+* **Qwen3** (e.g., Qwen3-8B) — a general-purpose model with strong reasoning capabilities and a unique thinking/non-thinking mode switch. Well-suited for mixed coding and explanation tasks, especially when chain-of-thought is beneficial.
+* **Llama / Mistral families** — solid general-purpose models, but not specifically optimized for code. Useful when a wider range of tasks is needed beyond pure programming.
+
+For a dedicated coding assistant (Aider or Crush in code-edit mode), the **Qwen2.5-Coder** or **Qwen3** families are the recommended starting point.
+
+---
+
+# Performance Factors & Latency Troubleshooting
+
+When using any frontend client (Aider, Crush) to interact with large files or codebases, you may experience long delays before receiving the first token (*Time To First Token* / TTFT). The key performance variables are:
+
+* **Prompt Processing Overhead (TTFT):** Before generating text, `llama-server` must process and compute the attention matrix for all input tokens (System Prompt + Client Context + Target File). Reading large files forces a massive initial evaluation phase proportional to the total token count.
+* **CPU Thread Tuning (`-t` Parameter):** Setting `-t` incorrectly causes severe performance degradation.
+  * **Rule:** Set `-t` equal to the number of **physical CPU cores** (e.g., `-t 8` on an 8-core CPU).
+  * **Avoid:** Setting `-t` to logical threads (Hyper-Threading / SMT) leads to CPU cache thrashing and slower prompt evaluation.
+* **System Memory Bandwidth (RAM Bottleneck):** LLM CPU inference is constrained by RAM speed (GB/s), not CPU clock rate. Dual-channel DDR5 provides significantly higher token generation speeds than DDR4. Full GPU offloading (via VRAM) is orders of magnitude faster than CPU RAM.
+* **Quantization Level Impact:** Heavy quantizations (`Q8_0` or `Q6_K`) require moving more data through system RAM per token compared to `Q4_K_M`.
+* **Frontend Context Building:** Both Aider and Crush automatically include contextual information in every prompt. Aider sends a `tree-sitter`-generated repository symbol map; Crush builds its own context window from open files and conversation history. In large projects, this significantly inflates the token count on the first request.
+
+### Quick Diagnostic Checklist for Slow Responses
+1. Check the terminal running `llama-server` for metrics:
+   * `prompt eval time`: Indicates initial context processing speed.
+   * `eval time`: Indicates token generation speed (tokens/sec).
+2. Confirm `-t` matches your physical CPU cores (not logical threads).
+3. Note that subsequent questions on the same file/context are much faster because `llama-server` reuses the prompt cache.
+
+---
+
+## Common Errors & Fixes
+
+### `llama-server` exits immediately or prints "failed to load model"
+**Cause:** Not enough system RAM to load the model weights plus KV cache at the requested context size.
+**Fix:** Try one or more of the following:
+* Switch to a lighter quantization (e.g., `Q4_K_M` instead of `Q6_K`).
+* Reduce the context window (e.g., `-c 8192` instead of `-c 32768`).
+* Use a smaller model.
+* If GPU offloading is active, lower `-ngl` to reduce VRAM pressure and let more layers stay in RAM.
+
+### Aider or Crush reports "Connection refused" or cannot reach the server
+**Cause:** `llama-server` is not running, crashed silently, or is listening on a different port than the one the client expects.
+**Fix:**
+* Verify `llama-server` is running and check its terminal output for errors.
+* Confirm the port in the client configuration (`--openai-api-base` for Aider, `base_url` in `crush.json`) matches the `--port` value passed to `llama-server` (default: `8080`).
+
+### Model outputs garbled, repetitive, or truncated text
+**Cause:** Chat template mismatch — the model is receiving prompts in a format it was not trained on, causing it to interpret role markers as regular text.
+**Fix:**
+* For Aider: ensure the `--model` identifier (e.g., `openai/qwen2.5-coder`) matches the actual model family loaded in `llama-server`. Using a mismatched identifier applies the wrong prompt format.
+* For Crush: verify the `id` and `name` fields in `crush.json` reflect the actual loaded model.
+* As a quick test, run `llama-cli` directly in interactive mode (`-cnv`) to isolate whether the issue is in the model or in the client layer.
+
+### `CUDA error: out of memory` or process is killed by the OS
+**Cause:** `-ngl` is set too high and the offloaded layers exceed available VRAM, or the KV cache allocation pushes over the limit.
+**Fix:** Reduce `-ngl` incrementally (e.g., by steps of 4) and restart `llama-server`. Monitor VRAM with `nvidia-smi` at startup to find the safe ceiling for your hardware.
+
+### `llama-server` starts without errors but only uses the CPU (GPU is idle)
+**Cause:** `llama.cpp` was compiled without CUDA support — the `GGML_CUDA=ON` flag was not passed to CMake, or the wrong binary from a previous CPU-only build is being executed.
+**Fix:**
+* Confirm you are running the binary from the CUDA-enabled build (`build/bin/llama-server` inside the directory where you ran `cmake -B build -DGGML_CUDA=ON`).
+* Delete the `build/` directory entirely and recompile from scratch following the CUDA build steps in the GPU Acceleration section.
+* Verify with `llama-server` startup logs: a CUDA-enabled build will print GPU device information (name, total VRAM) before loading the model.
+
+### `aider` command not found after installation
+**Cause:** `uv` installs binaries into `~/.local/bin`, which is not in the shell `PATH` by default on all systems.
+**Fix:** Add the following to your `~/.zshrc` or `~/.bashrc` and reload the shell:
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+source ~/.zshrc  # or source ~/.bashrc
+```
+Verify with `which aider` — it should return a path under `~/.local/bin/`.
+
+### Crush or Aider stops generating mid-response or returns empty output
+**Cause A (Crush):** `default_max_tokens` in `crush.json` is too low for the requested response length.
+**Fix:** Increase `default_max_tokens` (e.g., from `4096` to `8192`) in `~/.config/crush/crush.json`.
+**Cause B (context overflow):** The total prompt length has reached the `-c` limit and the model has no tokens left to generate output.
+**Fix:** Start a fresh session, reduce the number of files added to context, or increase `-c` (and update `context_window` in `crush.json` accordingly).
+
+### Very high RAM usage at idle, before sending any prompt
+**Cause:** This is expected behavior. `llama.cpp` pre-allocates the full KV cache for the requested context window (`-c`) at startup, in addition to loading model weights. This is by design to guarantee stability and avoid runtime memory allocation failures.
+**Fix:** If memory is tight, reduce `-c` to a smaller value. The RAM reserved for the KV cache scales linearly with the context window size.
