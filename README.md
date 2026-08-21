@@ -116,14 +116,14 @@ source ~/.zshrc || source ~/.bashrc
 
 ### Finding GGUF Models on Hugging Face
 The `llama.cpp` backend operates exclusively on GGUF formatted models. To locate them on Hugging Face:
-* Search for the model family name appended with GGUF (e.g., `Qwen2.5-Coder-14B GGUF`).
+* Search for the model family name appended with GGUF (e.g., `Qwen3.8-27B GGUF`).
 * Rely on well-maintained quantization repositories from community creators such as `bartowski` or `TheBloke`.
 
 ### Download Methods
 * **Terminal / Automation (Recommended):** Fetch using `curl` or `wget`:
   ```bash
   mkdir -p ~/models && cd ~/models
-  curl -L -O https://huggingface.co/bartowski/Qwen2.5-Coder-14B-Instruct-GGUF/resolve/main/Qwen2.5-Coder-14B-Instruct-Q6_K.gguf
+  curl -L -O https://huggingface.co/<model-repo>/resolve/main/Qwen3.8-27B-UD-Q4_K_M.gguf
   ```
 * **Manual Browser Download:** Download directly from the Hugging Face *Files and versions* tab into `~/models/`.
 
@@ -143,25 +143,25 @@ Model selection depends heavily on available System RAM or GPU VRAM. Quantizatio
 
 ### Option A: Launching `llama-server` (Backend Service)
 ```bash
-/path/to/llama.cpp/build/bin/llama-server   -m ~/models/Qwen2.5-Coder-14B-Instruct-Q6_K.gguf   -t $(nproc) -c 32768 --port 8080
+/path/to/llama.cpp/build/bin/llama-server   -m ~/models/Qwen3.8-27B-UD-Q4_K_M.gguf   -t $(nproc) -c 32768 --port 8080
 ```
 
 ### Option B: Launching `aider` (CLI Client)
 ```bash
-~/.local/bin/aider   --openai-api-base http://localhost:8080/v1   --openai-api-key not-needed   --model openai/qwen2.5-coder
+~/.local/bin/aider   --openai-api-base http://localhost:8080/v1   --openai-api-key not-needed   --model openai/qwen3
 ```
 
 ### Option C: Native Interactive CLI Chat (Without Aider or HTTP Server)
 ```bash
-/path/to/llama.cpp/build/bin/llama-cli   -m ~/models/Qwen2.5-Coder-14B-Instruct-Q6_K.gguf   -c 32768 -t $(nproc) -cnv
+/path/to/llama.cpp/build/bin/llama-cli   -m ~/models/Qwen3.8-27B-UD-Q4_K_M.gguf   -c 32768 -t $(nproc) -cnv
 ```
 
 ### Recommended Shell Aliases
 Add these aliases to your `~/.bashrc` or `~/.zshrc`:
 
 ```bash
-alias llama-coder="/path/to/llama.cpp/build/bin/llama-server -m ~/models/Qwen2.5-Coder-14B-Instruct-Q6_K.gguf -t $(nproc) -c 32768 --port 8080"
-alias aider-local="~/.local/bin/aider --openai-api-base http://localhost:8080/v1 --openai-api-key not-needed --model openai/qwen2.5-coder"
+alias llama-coder="/path/to/llama.cpp/build/bin/llama-server -m ~/models/Qwen3.8-27B-UD-Q4_K_M.gguf -t $(nproc) -c 32768 --port 8080"
+alias aider-local="~/.local/bin/aider --openai-api-base http://localhost:8080/v1 --openai-api-key not-needed --model openai/qwen3"
 ```
 
 ---
@@ -179,7 +179,7 @@ Start a persistent back-and-forth chat session in the terminal:
 
 ```bash
 /path/to/llama.cpp/build/bin/llama-cli \
-  -m ~/models/Qwen2.5-Coder-14B-Instruct-Q6_K.gguf \
+  -m ~/models/Qwen3.8-27B-UD-Q4_K_M.gguf \
   -t $(nproc) -c 32768 \
   -cnv
 ```
@@ -192,7 +192,7 @@ Send a single prompt and get the output directly in the terminal — useful for 
 
 ```bash
 /path/to/llama.cpp/build/bin/llama-cli \
-  -m ~/models/Qwen2.5-Coder-14B-Instruct-Q6_K.gguf \
+  -m ~/models/Qwen3.8-27B-UD-Q4_K_M.gguf \
   -t $(nproc) -c 8192 \
   -p "Write a Python function that merges two sorted lists."
 ```
@@ -206,7 +206,7 @@ Inject the contents of a file directly into the prompt — useful for asking the
 ```bash
 echo "Explain what this code does:" | cat - myfile.py | \
   /path/to/llama.cpp/build/bin/llama-cli \
-  -m ~/models/Qwen2.5-Coder-14B-Instruct-Q6_K.gguf \
+  -m ~/models/Qwen3.8-27B-UD-Q4_K_M.gguf \
   -t $(nproc) -c 32768 -p "$(cat)"
 ```
 
@@ -214,7 +214,7 @@ A simpler approach using command substitution:
 
 ```bash
 /path/to/llama.cpp/build/bin/llama-cli \
-  -m ~/models/Qwen2.5-Coder-14B-Instruct-Q6_K.gguf \
+  -m ~/models/Qwen3.8-27B-UD-Q4_K_M.gguf \
   -t $(nproc) -c 32768 \
   -p "Refactor this Python code for readability:\n$(cat myfile.py)"
 ```
@@ -225,7 +225,7 @@ If you compiled `llama.cpp` with CUDA support, add `-ngl` to offload layers to t
 
 ```bash
 /path/to/llama.cpp/build/bin/llama-cli \
-  -m ~/models/Qwen2.5-Coder-14B-Instruct-Q6_K.gguf \
+  -m ~/models/Qwen3.8-27B-UD-Q4_K_M.gguf \
   -t $(nproc) -c 32768 \
   -ngl 20 \
   -cnv
@@ -325,7 +325,7 @@ Crush uses a JSON schema located in `~/.config/crush/crush.json` to define custo
       "models": [
         {
           "id": "local-qwen3.8",
-          "name": "Qwen 3.8 Coder",
+          "name": "Qwen 3.8 Local",
           "context_window": 32768,
           "default_max_tokens": 4096,
           "can_reason": true,
@@ -663,7 +663,22 @@ The loop repeats up to a configurable maximum (default: 6 iterations) in case th
 
 ## 4. Installing Dependencies
 
-The proxy requires three Python packages. Install them into an isolated environment to avoid conflicts with the Aider installation:
+The proxy requires three Python packages. Install them into an isolated environment to avoid conflicts with the Aider installation.
+
+### Arch Linux
+
+On Arch, the `EXTERNALLY-MANAGED` marker is propagated into `uv`-created venvs, so use `uv pip install` instead of plain `pip`:
+
+```bash
+uv venv ~/.local/share/llama-proxy/.venv --python 3.12
+source ~/.local/share/llama-proxy/.venv/bin/activate
+uv pip install fastapi uvicorn httpx duckduckgo-search
+deactivate
+```
+
+### Debian / Ubuntu
+
+On Debian (≥ 12 Bookworm) and Ubuntu, the `EXTERNALLY-MANAGED` restriction applies only to the system Python and is **not** inherited by venvs, so plain `pip` works inside the venv:
 
 ```bash
 uv venv ~/.local/share/llama-proxy/.venv --python 3.12
@@ -672,7 +687,10 @@ pip install fastapi uvicorn httpx duckduckgo-search
 deactivate
 ```
 
-Alternatively, if you prefer a single global install managed by `uv`:
+> [!TIP]
+> Using `uv pip install` (as shown for Arch) also works on Debian/Ubuntu, so that command is safe to use on any distro.
+
+### Alternative: single global install with `uv`
 
 ```bash
 uv tool install --python 3.12 uvicorn
@@ -681,35 +699,55 @@ uv pip install fastapi httpx duckduckgo-search
 
 ---
 
-## 5. The Proxy Script
+## 5. The Proxy — Modular Structure
 
-Create the file `~/.local/bin/llama-search-proxy.py`:
+Instead of a single monolithic script, the proxy is split into three files inside `~/.local/share/llama-proxy/`. The motivation is **extensibility**: adding a new tool only requires creating a new file in `tools/` and registering one line in `tools/__init__.py` — the routing logic in `main.py` never needs to change.
+
+```
+~/.local/share/llama-proxy/
+├── config.py        # runtime constants and system prompt
+├── tools/
+│   ├── __init__.py  # tool handler registry — the only file to edit when adding a tool
+│   └── search.py    # DuckDuckGo implementation + OpenAI tool definition
+└── main.py          # FastAPI app: agentic tool loop + transparent passthrough
+```
+
+Create the directory structure:
+
+```bash
+mkdir -p ~/.local/share/llama-proxy/tools
+```
+
+### `config.py`
+
+Runtime constants and the system prompt injected into every conversation.
 
 ```python
-#!/usr/bin/env python3
-"""
-OpenAI-compatible Tool Proxy for llama-server.
-Adds automatic web_search tool execution between Aider/Crush and llama-server.
+BACKEND_URL = "http://localhost:8080"
+PROXY_PORT  = 8081
+MAX_RESULTS = 5
+MAX_LOOPS   = 6   # safeguard against infinite tool call chains
 
-Listen port : 8081  (clients point here)
-Backend port: 8080  (llama-server)
-"""
+SEARCH_SYSTEM_PROMPT = {
+    "role": "system",
+    "content": (
+        "You have access to a web_search tool. "
+        "Use it whenever the user asks you to search online, or when the question "
+        "involves current events, latest software versions, recent releases, or "
+        "any information that may have changed after your training cutoff. "
+        "When in doubt about the freshness of your knowledge, search."
+    ),
+}
+```
 
-import json
-import asyncio
-import httpx
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+### `tools/search.py`
+
+DuckDuckGo search implementation. The OpenAI-format tool definition lives here, next to its implementation, so adding a new tool means adding a new file with the same pattern.
+
+```python
+from config import MAX_RESULTS
 from duckduckgo_search import DDGS
 
-BACKEND_URL  = "http://localhost:8080"
-PROXY_PORT   = 8081
-MAX_RESULTS  = 5
-MAX_LOOPS    = 6   # safeguard against infinite tool call chains
-
-app = FastAPI()
-
-# Tool definition sent to the model on every request
 SEARCH_TOOL = {
     "type": "function",
     "function": {
@@ -729,18 +767,6 @@ SEARCH_TOOL = {
     },
 }
 
-# System prompt injected when the conversation has no existing system message
-SEARCH_SYSTEM_PROMPT = {
-    "role": "system",
-    "content": (
-        "You have access to a web_search tool. "
-        "Use it whenever the user asks you to search online, or when the question "
-        "involves current events, latest software versions, recent releases, or "
-        "any information that may have changed after your training cutoff. "
-        "When in doubt about the freshness of your knowledge, search."
-    ),
-}
-
 
 def do_search(query: str) -> str:
     """Execute a DuckDuckGo search and return formatted results."""
@@ -756,6 +782,38 @@ def do_search(query: str) -> str:
         return "\n\n".join(parts)
     except Exception as e:
         return f"Search error: {e}"
+```
+
+### `tools/__init__.py`
+
+The central registry. Maps each tool name to its handler and collects the OpenAI tool definitions to inject into every request. **To add a new tool: one import and one entry here.**
+
+```python
+from typing import Callable
+from .search import do_search, SEARCH_TOOL
+
+TOOL_HANDLERS: dict[str, Callable[[dict], str]] = {
+    "web_search": lambda args: do_search(args.get("query", "")),
+}
+
+TOOL_DEFINITIONS = [SEARCH_TOOL]
+```
+
+### `main.py`
+
+FastAPI application. Imports tools from the registry — never references any specific tool implementation by name.
+
+```python
+import json
+import asyncio
+import httpx
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse, Response
+
+from config import BACKEND_URL, PROXY_PORT, MAX_LOOPS, SEARCH_SYSTEM_PROMPT
+from tools import TOOL_HANDLERS, TOOL_DEFINITIONS
+
+app = FastAPI()
 
 
 @app.post("/v1/chat/completions")
@@ -765,76 +823,97 @@ async def chat_completions(request: Request):
     # Force non-streaming for the tool loop; the final response is returned in full
     body["stream"] = False
 
-    # Inject web_search tool if not already present
+    # Inject all registered tools if not already present
     existing_tools = {t.get("function", {}).get("name") for t in body.get("tools", [])}
-    if "web_search" not in existing_tools:
-        body.setdefault("tools", []).insert(0, SEARCH_TOOL)
+    for tool in TOOL_DEFINITIONS:
+        if tool["function"]["name"] not in existing_tools:
+            body.setdefault("tools", []).append(tool)
 
     # Inject system prompt if the conversation has none
     messages = body.get("messages", [])
     if not any(m.get("role") == "system" for m in messages):
         body["messages"] = [SEARCH_SYSTEM_PROMPT] + messages
 
-    async with httpx.AsyncClient(timeout=300) as client:
-        for _ in range(MAX_LOOPS):
-            resp = await client.post(
-                f"{BACKEND_URL}/v1/chat/completions", json=body
-            )
-            data = resp.json()
-
-            choice     = data.get("choices", [{}])[0]
-            message    = choice.get("message", {})
-            tool_calls = message.get("tool_calls") or []
-
-            if not tool_calls:
-                # No tool call — the model produced a final text answer
-                return JSONResponse(data)
-
-            # Execute every tool call the model requested
-            body["messages"].append(message)
-            for tc in tool_calls:
-                fn_name = tc["function"]["name"]
-                fn_args = json.loads(tc["function"]["arguments"])
-
-                if fn_name == "web_search":
-                    result = await asyncio.get_event_loop().run_in_executor(
-                        None, do_search, fn_args.get("query", "")
+    try:
+        async with httpx.AsyncClient(timeout=300) as client:
+            for _ in range(MAX_LOOPS):
+                resp = await client.post(
+                    f"{BACKEND_URL}/v1/chat/completions", json=body
+                )
+                try:
+                    data = resp.json()
+                except Exception:
+                    return Response(
+                        content=resp.content,
+                        status_code=resp.status_code,
+                        media_type=resp.headers.get("content-type", "application/octet-stream"),
                     )
-                else:
-                    result = f"Unknown tool requested: {fn_name}"
 
-                body["messages"].append({
-                    "role":         "tool",
-                    "tool_call_id": tc["id"],
-                    "content":      result,
-                })
+                choice     = data.get("choices", [{}])[0]
+                message    = choice.get("message", {})
+                tool_calls = message.get("tool_calls") or []
 
-    # MAX_LOOPS reached — return whatever the last response was
-    return JSONResponse(data)
+                if not tool_calls:
+                    # No tool call — the model produced a final text answer
+                    return JSONResponse(data, status_code=resp.status_code)
+
+                # Execute every tool call the model requested
+                body["messages"].append(message)
+                for tc in tool_calls:
+                    fn_name = tc["function"]["name"]
+                    try:
+                        fn_args = json.loads(tc["function"]["arguments"])
+                    except json.JSONDecodeError:
+                        fn_args = {}
+
+                    if fn_name in TOOL_HANDLERS:
+                        result = await asyncio.get_running_loop().run_in_executor(
+                            None, TOOL_HANDLERS[fn_name], fn_args
+                        )
+                    else:
+                        result = f"Unknown tool requested: {fn_name}"
+
+                    body["messages"].append({
+                        "role":         "tool",
+                        "tool_call_id": tc["id"],
+                        "content":      result,
+                    })
+
+        # MAX_LOOPS reached — return whatever the last response was
+        return JSONResponse(data, status_code=resp.status_code)
+    except httpx.HTTPError as e:
+        return JSONResponse(
+            {"error": {"message": str(e), "type": "proxy_error"}},
+            status_code=502,
+        )
 
 
 # Transparent passthrough for all other endpoints (/v1/models, /health, etc.)
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 async def passthrough(path: str, request: Request):
-    async with httpx.AsyncClient(timeout=60) as client:
-        resp = await client.request(
-            method=request.method,
-            url=f"{BACKEND_URL}/{path}",
-            content=await request.body(),
-            headers={k: v for k, v in request.headers.items() if k.lower() != "host"},
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.request(
+                method=request.method,
+                url=f"{BACKEND_URL}/{path}",
+                content=await request.body(),
+                headers={k: v for k, v in request.headers.items() if k.lower() != "host"},
+            )
+        return Response(
+            content=resp.content,
+            status_code=resp.status_code,
+            media_type=resp.headers.get("content-type", "application/json"),
         )
-    return JSONResponse(resp.json(), status_code=resp.status_code)
+    except httpx.HTTPError as e:
+        return JSONResponse(
+            {"error": {"message": str(e), "type": "proxy_error"}},
+            status_code=502,
+        )
 
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=PROXY_PORT, log_level="info")
-```
-
-Make the file executable:
-
-```bash
-chmod +x ~/.local/bin/llama-search-proxy.py
 ```
 
 ---
@@ -856,7 +935,7 @@ The proxy script above already injects a system prompt that nudges the model tow
 **Key takeaway:** with the system prompt active, explicitly writing `"search online"`, `"cerca su internet"`, `"look up"`, or any equivalent phrasing in any language makes the search behaviour deterministic. The model will call `web_search` before composing its answer.
 
 > [!NOTE]
-> Local models (Qwen3, Qwen2.5-Coder) are less reliably autonomous than cloud models at deciding *when* to search unprompted. Relying on explicit phrasing combined with the system prompt gives consistent, predictable results without any performance overhead on requests that do not need a search.
+> Local models (Qwen3) are less reliably autonomous than cloud models at deciding *when* to search unprompted. Relying on explicit phrasing combined with the system prompt gives consistent, predictable results without any performance overhead on requests that do not need a search.
 
 ---
 
@@ -870,7 +949,7 @@ Point Aider to port `8081` (the proxy) instead of `8080` (llama-server directly)
 ~/.local/bin/aider \
   --openai-api-base http://localhost:8081/v1 \
   --openai-api-key not-needed \
-  --model openai/qwen2.5-coder \
+  --model openai/qwen3 \
   --no-stream
 ```
 
@@ -891,7 +970,7 @@ Edit `~/.config/crush/crush.json` and change `base_url` from port `8080` to `808
       "models": [
         {
           "id": "local-qwen3.8",
-          "name": "Qwen 3.8 Coder",
+          "name": "Qwen 3.8 Local",
           "context_window": 32768,
           "default_max_tokens": 4096,
           "can_reason": true,
@@ -912,10 +991,14 @@ No other changes are needed. Crush will continue to work identically — it simp
 Add the following aliases alongside the existing ones in your `~/.bashrc` or `~/.zshrc`:
 
 ```bash
-alias llama-proxy="source ~/.local/share/llama-proxy/.venv/bin/activate && python3 ~/.local/bin/llama-search-proxy.py"
-alias aider-web="~/.local/bin/aider --openai-api-base http://localhost:8081/v1 --openai-api-key not-needed --model openai/qwen2.5-coder --no-stream"
-alias crush-web="crush --provider llama-local --model local-qwen3.8"
+alias llama-proxy="(cd ~/.local/share/llama-proxy && .venv/bin/python main.py)"
+alias aider-web="aider --openai-api-base http://localhost:8081/v1 --openai-api-key not-needed --model openai/qwen3 --no-stream"
 ```
+
+> [!NOTE]
+> No alias is needed for Crush — `crush` alone already uses the `llama-local` provider configured in `crush.json`, which already points to the proxy on port `8081`.
+>
+> The flags in `aider-web` are all necessary: `--openai-api-base` points aider to the proxy instead of llama-server directly, `--no-stream` is required because the proxy resolves the full response before returning it, and `--openai-api-key` is a placeholder required by aider even when not used.
 
 The recommended startup sequence using three terminal tabs or a multiplexer such as `tmux`:
 
@@ -927,14 +1010,14 @@ llama-coder
 llama-proxy
 
 # Tab 3 — your coding session
-aider-web   # or: crush-web
+aider-web   # or: crush
 ```
 
 ---
 
 ## 9. Alternative Search Backends
 
-The `do_search()` function in the proxy script is the only part that needs to change when switching search providers. All other logic remains identical.
+The `do_search()` function in `tools/search.py` is the only part that needs to change when switching search providers. All other logic remains identical.
 
 | Backend | API Key | Privacy | Notes |
 | :--- | :--- | :--- | :--- |
@@ -955,10 +1038,10 @@ It specifies the maximum number of tokens (1 token ≈ 3–4 characters) the mod
 ### Where is the `.gguf` file specified?
 The `.gguf` path is passed exclusively to `llama-server` via the `-m` flag. Neither Aider nor Crush accesses the model file directly — both communicate with the backend exclusively over HTTP.
 
-### Why use the model identifier `openai/qwen2.5-coder` in Aider?
+### Why use the model identifier `openai/qwen3` in Aider?
 This string is a LiteLLM identifier used by Aider to configure its internal logic:
 * `openai/` tells Aider to send requests via the OpenAI API protocol over HTTP.
-* `qwen2.5-coder` informs Aider of the model family capabilities, optimizing its system prompts and code-editing strategy.
+* `qwen3` informs Aider of the model family capabilities, optimizing its system prompts and code-editing strategy.
 
 ### What is the difference between `llama-server` and `llama-cli`?
 * **`llama-server`** loads the model once and exposes a persistent HTTP API on a given port. It is designed to serve multiple requests over time and is what Aider and Crush connect to.
@@ -976,11 +1059,11 @@ Two methods:
 When the total tokens (system prompt + history + new message) exceed the `-c` value, `llama-server` applies a **context shift** by default: it discards the oldest tokens in the conversation to make room for new ones. This can cause the model to "forget" earlier parts of the conversation. To disable this behavior and instead receive an explicit error (useful for debugging), pass `--no-context-shift` to `llama-server`. The solution is to either increase `-c` or start a new session.
 
 ### Which model family is best suited for coding tasks?
-* **Qwen2.5-Coder** — purpose-built for code generation, completion, and explanation. Strong benchmark results on coding tasks across all sizes (3B to 32B).
-* **Qwen3** (e.g., Qwen3-8B) — a general-purpose model with strong reasoning capabilities and a unique thinking/non-thinking mode switch. Well-suited for mixed coding and explanation tasks, especially when chain-of-thought is beneficial.
-* **Llama / Mistral families** — solid general-purpose models, but not specifically optimized for code. Useful when a wider range of tasks is needed beyond pure programming.
+* **Qwen3** (e.g., Qwen3-8B, Qwen3-27B) — strong reasoning capabilities with a thinking/non-thinking mode switch. Excellent for mixed coding and explanation tasks. **Recommended.**
+* **Qwen2.5-Coder** — purpose-built for code generation. Valid alternative if Qwen3 is not available.
+* **Llama / Mistral families** — solid general-purpose models, but not specifically optimized for code.
 
-For a dedicated coding assistant (Aider or Crush in code-edit mode), the **Qwen2.5-Coder** or **Qwen3** families are the recommended starting point.
+For a dedicated coding assistant (Aider or Crush in code-edit mode), the **Qwen3** family is the recommended starting point.
 
 ---
 
@@ -1024,7 +1107,7 @@ When using any frontend client (Aider, Crush) to interact with large files or co
 ### Model outputs garbled, repetitive, or truncated text
 **Cause:** Chat template mismatch — the model is receiving prompts in a format it was not trained on, causing it to interpret role markers as regular text.
 **Fix:**
-* For Aider: ensure the `--model` identifier (e.g., `openai/qwen2.5-coder`) matches the actual model family loaded in `llama-server`. Using a mismatched identifier applies the wrong prompt format.
+* For Aider: ensure the `--model` identifier (e.g., `openai/qwen3`) matches the actual model family loaded in `llama-server`. Using a mismatched identifier applies the wrong prompt format.
 * For Crush: verify the `id` and `name` fields in `crush.json` reflect the actual loaded model.
 * As a quick test, run `llama-cli` directly in interactive mode (`-cnv`) to isolate whether the issue is in the model or in the client layer.
 
