@@ -5,6 +5,32 @@
 
 ---
 
+## Table of Contents
+
+- [1. System Architecture Overview](#1-system-architecture-overview)
+- [2. Installing System Dependencies](#2-installing-system-dependencies)
+- [3. Compiling llama.cpp from Source](#3-compiling-llamacpp-from-source)
+- [4. Isolated Installation of Aider](#4-isolated-installation-of-aider)
+- [5. Model Selection, Hugging Face Download & Hardware Scaling](#5-model-selection-hugging-face-download--hardware-scaling)
+- [6. Executable Commands & Shell Automation](#6-executable-commands--shell-automation)
+- [7. Using `llama-cli` for On-Demand Queries](#7-using-llama-cli-for-on-demand-queries)
+- [Setup Guide: Crush as an Alternative to Aider](#setup-guide-crush-charm-as-an-alternative-to-aider)
+  - [1. Overview & Comparison](#1-overview--comparison)
+  - [2. Installation](#2-installation)
+  - [3. Configuration Setup](#3-configuration-setup)
+  - [4. Running the Complete Stack](#4-running-the-complete-stack)
+  - [5. Shell Aliases & Automation](#5-shell-aliases--automation)
+- [GPU Acceleration with CUDA](#gpu-acceleration-with-cuda)
+  - [Prerequisites: Installing the CUDA Toolkit](#prerequisites-installing-the-cuda-toolkit)
+  - [Recompiling llama.cpp with CUDA Support](#recompiling-llamacpp-with-cuda-support)
+  - [Offloading Layers to GPU (`-ngl`)](#offloading-layers-to-gpu--ngl)
+  - [Storing Models on a Secondary Drive](#storing-models-on-a-secondary-drive)
+- [Technical Concept Reference & FAQs](#technical-concept-reference--faqs)
+- [Performance Factors & Latency Troubleshooting](#performance-factors--latency-troubleshooting)
+  - [Common Errors & Fixes](#common-errors--fixes)
+
+---
+
 ## 1. System Architecture Overview
 
 This setup utilizes a decoupled client-server architecture designed for high efficiency and total local privacy:
@@ -12,6 +38,7 @@ This setup utilizes a decoupled client-server architecture designed for high eff
 * **Backend (`llama-server`):** Compiled natively from `llama.cpp` source code. It loads quantized LLM weights into system RAM and exposes an OpenAI-compatible HTTP REST API on port `8080`.
 * **Frontend (`aider`):** A Git-integrated AI coding CLI tool. It inspects project files, formats edit prompts, communicates with the backend server, and directly applies modifications to your codebase.
 
+> [!NOTE]
 > **Why compile `llama.cpp` from source instead of using a pre-built package?**
 > Pre-built binaries distributed via package managers (e.g., `pacman`, `apt`) are compiled for a generic x86-64 target and cannot take advantage of CPU-specific instruction sets such as AVX2 or AVX-512. Compiling locally with CMake allows the toolchain to detect and use all instruction sets supported by your processor, resulting in noticeably faster prompt evaluation and token generation speeds. Additionally, enabling GPU support (CUDA) requires building with the `-DGGML_CUDA=ON` flag, which is not available in standard pre-built distributions.
 
@@ -36,7 +63,8 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 source ~/.bashrc
 ```
 
-> **Note:** The commands above install `cmake` as part of the dependency bundle. Verifying your CMake version, resolving conflicts with existing installations, or upgrading CMake manually is outside the scope of this guide. If `cmake` is already present on your system, you can skip or adapt the relevant line. Refer to the [official CMake documentation](https://cmake.org/install/) for any installation issues.
+> [!NOTE]
+> The commands above install `cmake` as part of the dependency bundle. Verifying your CMake version, resolving conflicts with existing installations, or upgrading CMake manually is outside the scope of this guide. If `cmake` is already present on your system, you can skip or adapt the relevant line. Refer to the [official CMake documentation](https://cmake.org/install/) for any installation issues.
 
 ---
 
@@ -132,6 +160,7 @@ alias aider-local="~/.local/bin/aider --openai-api-base http://localhost:8080/v1
 
 `llama-cli` is the lightweight alternative to the full server stack. It loads the model, answers your query, and exits — no persistent HTTP server required. This makes it ideal for quick one-off questions, scripting, or situations where you do not want to keep a server running in the background.
 
+> [!NOTE]
 > **Trade-off:** Every invocation of `llama-cli` reloads the model from disk and reallocates the KV cache from scratch. If you plan to send multiple messages in sequence, the interactive mode (`-cnv`) is more efficient than re-launching the binary each time.
 
 ### Interactive Conversation Mode
@@ -335,7 +364,8 @@ Ensure your `llama-server` is up and running on port `8080`:
 /path/to/llama.cpp/build/bin/llama-server   -m ~/models/your-model.gguf   -t $(nproc) -c 32768 --port 8080
 ```
 
-> **Note:** The `-m` path and model ID in the `crush.json` config must refer to the same model. The example above and the JSON config in section 3 both target `Qwen3-8B`; replace the filename accordingly if you are using a different model.
+> [!IMPORTANT]
+> The `-m` path and model ID in the `crush.json` config must refer to the same model. The example above and the JSON config in section 3 both target `Qwen3-8B`; replace the filename accordingly if you are using a different model.
 
 ### Step 2: Start Crush
 Launch Crush inside your project repository:
@@ -449,7 +479,8 @@ The key insight is that **inference is sequential**: the model processes one lay
 | 32B parameters | 64 layers | Qwen2.5-Coder-32B |
 | 70B parameters | 80 layers | Llama-3.1-70B, Llama-3.3-70B |
 
-> *Layer counts vary between model families — Qwen3 models in particular use a different architecture than same-size Llama/Mistral variants. The exact value is always listed in the model's `config.json` on Hugging Face, or reported by `llama-server` at startup.
+> [!NOTE]
+> Layer counts vary between model families — Qwen3 models in particular use a different architecture than same-size Llama/Mistral variants. The exact value is always listed in the model's `config.json` on Hugging Face, or reported by `llama-server` at startup.
 
 ### VRAM Consumption Estimation
 
@@ -470,6 +501,7 @@ VRAM per layer ≈ total_model_file_size_GB / total_layer_count
 | 14B | Q6_K | ~11.0 GB | 48 | ~229 MB | ~12.0 GB (+ overhead) |
 | 32B | Q4_K_M | ~18.0 GB | 64 | ~281 MB | ~20.0 GB (+ overhead) |
 
+> [!NOTE]
 > The overhead (~0.5–1.5 GB) accounts for the embedding layer, the output projection, and the KV cache allocated for the context window.
 
 ### Comparative Scenarios
@@ -483,6 +515,7 @@ The table below shows how `-ngl` affects performance and resource usage for a **
 | `32` | 32 / 48 | 16 / 48 | ~6.0 GB | ~3–4× faster than baseline |
 | `48` | 48 / 48 | 0 / 48 | ~9.5 GB | Maximum speed — requires ≥10 GB VRAM |
 
+> [!NOTE]
 > Speed multipliers are indicative and vary with CPU, RAM bandwidth, and PCIe generation. The TTFT improvement is typically even more pronounced than token generation speed, since the entire prompt must be processed before the first token is produced.
 
 ### How to Calibrate the Value
@@ -508,7 +541,8 @@ The table below shows how `-ngl` affects performance and resource usage for a **
 alias llama-server-gpu="/path/to/llama.cpp/build/bin/llama-server -m ~/models/your-model.gguf -t $(nproc) -c 32768 -ngl 20 --port 8080"
 ```
 
-> **Note:** The `-t` parameter should still be set to your physical CPU core count (not logical threads), as it governs the CPU threads used for any layers that remain on the CPU side.
+> [!NOTE]
+> The `-t` parameter should still be set to your physical CPU core count (not logical threads), as it governs the CPU threads used for any layers that remain on the CPU side.
 
 ---
 
