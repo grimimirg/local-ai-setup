@@ -745,8 +745,11 @@ SEARCH_SYSTEM_PROMPT = {
 DuckDuckGo search implementation. The OpenAI-format tool definition lives here, next to its implementation, so adding a new tool means adding a new file with the same pattern.
 
 ```python
+import logging
 from config import MAX_RESULTS
 from duckduckgo_search import DDGS
+
+logger = logging.getLogger("llama-proxy.search")
 
 SEARCH_TOOL = {
     "type": "function",
@@ -770,9 +773,11 @@ SEARCH_TOOL = {
 
 def do_search(query: str) -> str:
     """Execute a DuckDuckGo search and return formatted results."""
+    logger.info("search query: %r", query)
     try:
         with DDGS() as ddgs:
             results = list(ddgs.text(query, max_results=MAX_RESULTS))
+        logger.debug("search returned %d result(s)", len(results))
         if not results:
             return "No results found for this query."
         parts = [
@@ -781,6 +786,7 @@ def do_search(query: str) -> str:
         ]
         return "\n\n".join(parts)
     except Exception as e:
+        logger.warning("search error: %s", e)
         return f"Search error: {e}"
 ```
 
@@ -805,20 +811,55 @@ FastAPI application. Imports tools from the registry — never references any sp
 
 ```python
 import json
+import logging
 import asyncio
 import httpx
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from config import BACKEND_URL, PROXY_PORT, MAX_LOOPS, SEARCH_SYSTEM_PROMPT
 from tools import TOOL_HANDLERS, TOOL_DEFINITIONS
 
+logger = logging.getLogger("llama-proxy")
 app = FastAPI()
+
+
+async def _as_sse(data: dict):
+    """Convert a complete chat completion JSON response into an SSE stream.
+
+    Clients that request stream=true (e.g. Crush) expect text/event-stream.
+    The proxy resolves the full response internally, then re-wraps it here so
+    the client receives a well-formed SSE sequence instead of a plain JSON body.
+    """
+    choice = data.get("choices", [{}])[0]
+    message = choice.get("message", {})
+    base = {
+        "id":      data.get("id", ""),
+        "object":  "chat.completion.chunk",
+        "created": data.get("created", 0),
+        "model":   data.get("model", ""),
+    }
+    yield f"data: {json.dumps({**base, 'choices': [{'index': 0, 'delta': {'role': 'assistant', 'content': ''}, 'finish_reason': None}]})}\n\n"
+    yield f"data: {json.dumps({**base, 'choices': [{'index': 0, 'delta': {'content': message.get('content', '')}, 'finish_reason': None}]})}\n\n"
+    yield f"data: {json.dumps({**base, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': choice.get('finish_reason', 'stop')}]})}\n\n"
+    yield "data: [DONE]\n\n"
+
+
+def _respond(data: dict, status_code: int, as_stream: bool):
+    """Return either a StreamingResponse (SSE) or a plain JSONResponse."""
+    if as_stream:
+        return StreamingResponse(_as_sse(data), media_type="text/event-stream")
+    return JSONResponse(data, status_code=status_code)
 
 
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
     body = await request.json()
+
+    # Remember whether the client wants a streaming response
+    client_wants_stream = body.get("stream", False)
+    logger.info("→ /v1/chat/completions | stream=%s | messages=%d",
+                client_wants_stream, len(body.get("messages", [])))
 
     # Force non-streaming for the tool loop; the final response is returned in full
     body["stream"] = False
@@ -828,21 +869,26 @@ async def chat_completions(request: Request):
     for tool in TOOL_DEFINITIONS:
         if tool["function"]["name"] not in existing_tools:
             body.setdefault("tools", []).append(tool)
+    logger.debug("  active tools: %s", [t["function"]["name"] for t in body.get("tools", [])])
 
     # Inject system prompt if the conversation has none
     messages = body.get("messages", [])
     if not any(m.get("role") == "system" for m in messages):
         body["messages"] = [SEARCH_SYSTEM_PROMPT] + messages
+        logger.debug("  system prompt injected")
 
     try:
         async with httpx.AsyncClient(timeout=300) as client:
-            for _ in range(MAX_LOOPS):
+            for loop_i in range(MAX_LOOPS):
+                logger.debug("  [loop %d/%d] sending request to backend", loop_i + 1, MAX_LOOPS)
                 resp = await client.post(
                     f"{BACKEND_URL}/v1/chat/completions", json=body
                 )
+                logger.debug("  [loop %d/%d] backend status: %d", loop_i + 1, MAX_LOOPS, resp.status_code)
                 try:
                     data = resp.json()
                 except Exception:
+                    logger.warning("  backend returned non-JSON response (status=%d)", resp.status_code)
                     return Response(
                         content=resp.content,
                         status_code=resp.status_code,
@@ -855,7 +901,9 @@ async def chat_completions(request: Request):
 
                 if not tool_calls:
                     # No tool call — the model produced a final text answer
-                    return JSONResponse(data, status_code=resp.status_code)
+                    logger.info("← final answer | loop=%d | stream=%s | status=%d",
+                                loop_i + 1, client_wants_stream, resp.status_code)
+                    return _respond(data, resp.status_code, client_wants_stream)
 
                 # Execute every tool call the model requested
                 body["messages"].append(message)
@@ -866,12 +914,18 @@ async def chat_completions(request: Request):
                     except json.JSONDecodeError:
                         fn_args = {}
 
+                    logger.info("  [loop %d/%d] tool call: %s | args=%s",
+                                loop_i + 1, MAX_LOOPS, fn_name, fn_args)
+
                     if fn_name in TOOL_HANDLERS:
                         result = await asyncio.get_running_loop().run_in_executor(
                             None, TOOL_HANDLERS[fn_name], fn_args
                         )
                     else:
+                        logger.warning("  unknown tool requested: %s", fn_name)
                         result = f"Unknown tool requested: {fn_name}"
+
+                    logger.debug("  tool result (%d chars): %.120s", len(result), result)
 
                     body["messages"].append({
                         "role":         "tool",
@@ -880,8 +934,10 @@ async def chat_completions(request: Request):
                     })
 
         # MAX_LOOPS reached — return whatever the last response was
-        return JSONResponse(data, status_code=resp.status_code)
+        logger.warning("← MAX_LOOPS (%d) reached, returning last response", MAX_LOOPS)
+        return _respond(data, resp.status_code, client_wants_stream)
     except httpx.HTTPError as e:
+        logger.error("backend connection error: %s", e)
         return JSONResponse(
             {"error": {"message": str(e), "type": "proxy_error"}},
             status_code=502,
@@ -912,8 +968,23 @@ async def passthrough(path: str, request: Request):
 
 
 if __name__ == "__main__":
+    import argparse
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=PROXY_PORT, log_level="info")
+
+    parser = argparse.ArgumentParser(description="llama-proxy: OpenAI-compatible tool proxy for llama-server")
+    parser.add_argument("--debug", action="store_true", help="Enable verbose debug logging")
+    parser.add_argument("--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1)")
+    parser.add_argument("--port", type=int, default=PROXY_PORT, help=f"Bind port (default: {PROXY_PORT})")
+    args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.debug else logging.INFO,
+        format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+    uvicorn.run(app, host=args.host, port=args.port,
+                log_level="debug" if args.debug else "info")
 ```
 
 ---
