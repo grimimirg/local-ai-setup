@@ -12,6 +12,9 @@ This setup utilizes a decoupled client-server architecture designed for high eff
 * **Backend (`llama-server`):** Compiled natively from `llama.cpp` source code. It loads quantized LLM weights into system RAM and exposes an OpenAI-compatible HTTP REST API on port `8080`.
 * **Frontend (`aider`):** A Git-integrated AI coding CLI tool. It inspects project files, formats edit prompts, communicates with the backend server, and directly applies modifications to your codebase.
 
+> **Why compile `llama.cpp` from source instead of using a pre-built package?**
+> Pre-built binaries distributed via package managers (e.g., `pacman`, `apt`) are compiled for a generic x86-64 target and cannot take advantage of CPU-specific instruction sets such as AVX2 or AVX-512. Compiling locally with CMake allows the toolchain to detect and use all instruction sets supported by your processor, resulting in noticeably faster prompt evaluation and token generation speeds. Additionally, enabling GPU support (CUDA) requires building with the `-DGGML_CUDA=ON` flag, which is not available in standard pre-built distributions.
+
 ---
 
 ## 2. Installing System Dependencies
@@ -32,6 +35,8 @@ sudo apt install build-essential cmake git python3-pip
 curl -LsSf https://astral.sh/uv/install.sh | sh
 source ~/.bashrc
 ```
+
+> **Note:** The commands above install `cmake` as part of the dependency bundle. Verifying your CMake version, resolving conflicts with existing installations, or upgrading CMake manually is outside the scope of this guide. If `cmake` is already present on your system, you can skip or adapt the relevant line. Refer to the [official CMake documentation](https://cmake.org/install/) for any installation issues.
 
 ---
 
