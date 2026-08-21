@@ -308,6 +308,22 @@ Crush uses a JSON schema located in `~/.config/crush/crush.json` to define custo
 * **`can_reason: true`** — Signals to Crush that this model supports extended reasoning (chain-of-thought) output, such as the thinking/non-thinking modes in Qwen3. Enables reasoning-specific UI features and prompt strategies within Crush.
 * **`supports_tools: true`** — Indicates that the model can handle function/tool calling requests formatted as structured JSON. Required for Crush's agent capabilities (file operations, shell commands, etc.) to work correctly.
 
+4. Add the required environment variables to your shell configuration file (`~/.zshrc` or `~/.bashrc`):
+
+   ```bash
+   export OPENAI_API_BASE="http://localhost:8080/v1"
+   export OPENAI_API_KEY="not-needed"
+   ```
+
+   Reload the shell configuration:
+
+   ```bash
+   source ~/.zshrc   # or source ~/.bashrc
+   ```
+
+   * **`OPENAI_API_BASE`** — Specifies the endpoint Crush uses to route API calls to the model. Must match the `base_url` defined in `crush.json` and the `--port` value passed to `llama-server`.
+   * **`OPENAI_API_KEY`** — Required by Crush even when no authentication is enforced. For local setups where `llama-server` runs without an API key, use any non-empty string (e.g., `"not-needed"`).
+
 ---
 
 ## 4. Running the Complete Stack
