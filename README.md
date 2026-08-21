@@ -249,6 +249,16 @@ Crush uses a JSON schema located in `~/.config/crush/crush.json` to define custo
 }
 ```
 
+**Key parameter reference:**
+
+* **`type: "openai-compat"`** — Tells Crush to communicate with this provider using the OpenAI HTTP API protocol (i.e., `POST /v1/chat/completions`). This is the same protocol that `llama-server` exposes, making the two fully compatible without any translation layer.
+* **`base_url`** — The root URL of the local backend. Crush appends `/chat/completions` to this automatically. Point this to wherever `llama-server` is running (`localhost` for local setups, or a remote IP/hostname for network deployments).
+* **`api_key: "not-needed"`** — `llama-server` does not enforce authentication by default, but Crush requires this field to be non-empty. Any non-empty string works.
+* **`context_window`** — Must match the `-c` value you passed to `llama-server` at startup. If Crush sends a prompt that exceeds this number of tokens, `llama-server` will truncate or error. Keep these values in sync.
+* **`default_max_tokens`** — The maximum number of tokens Crush will request for each model response. This does **not** affect the total context window — it only caps the length of a single reply. Increase it if the model cuts off long responses.
+* **`can_reason: true`** — Signals to Crush that this model supports extended reasoning (chain-of-thought) output, such as the thinking/non-thinking modes in Qwen3. Enables reasoning-specific UI features and prompt strategies within Crush.
+* **`supports_tools: true`** — Indicates that the model can handle function/tool calling requests formatted as structured JSON. Required for Crush's agent capabilities (file operations, shell commands, etc.) to work correctly.
+
 ---
 
 ## 4. Running the Complete Stack
@@ -285,7 +295,7 @@ crush-local
 
 ---
 
-# Advanced: GPU Acceleration with CUDA
+# GPU Acceleration with CUDA
 
 By default, `llama.cpp` runs inference entirely on the CPU. If you have a CUDA-capable NVIDIA GPU, you can offload transformer layers to GPU VRAM using the `-ngl` flag. Even partial GPU offloading significantly reduces **Time To First Token (TTFT)** and improves overall throughput compared to a pure CPU setup.
 
@@ -355,10 +365,64 @@ The resulting `llama-server` and `llama-cli` binaries in `build/bin/` will now s
 
 The `-ngl` parameter (also accepted as `--gpu-layers` or `--n-gpu-layers`) controls how many transformer layers are loaded into GPU VRAM. Any layers beyond that limit fall back to system RAM and CPU processing.
 
-**How to calibrate the value:**
-* Set `-ngl` to the model's total layer count for a **full offload** — only feasible if the entire model fits within your available VRAM.
-* Use a **partial value** if the model is larger than your VRAM. `llama-server` logs exact VRAM allocation at startup, so you can tune this incrementally.
-* Start conservatively, observe VRAM usage in the server logs, and increase until you approach your GPU's memory limit.
+### How Layer Offloading Works
+
+A transformer model is not a monolithic block — it is composed of a stack of independent **transformer layers** (also called blocks or decoder layers), each containing the attention heads and feed-forward networks that do the actual computation. When `llama-server` loads a model, it can assign each layer individually to either the GPU or the CPU.
+
+The key insight is that **inference is sequential**: the model processes one layer at a time, in order. If a layer lives in VRAM, computation happens at GPU speed (very fast). If a layer lives in RAM, the data must be transferred over the PCIe bus and processed by the CPU (much slower). This means even a partial offload yields a measurable speed gain, because the bottleneck layers (early and middle ones) get accelerated.
+
+### Layer Count Reference by Model Size
+
+| Model Size | Typical Layer Count | Example Models |
+| :--- | :--- | :--- |
+| 3B parameters | 28 layers | Qwen2.5-Coder-3B, Llama-3.2-3B |
+| 7B–8B parameters | 32 layers | Llama-3.1-8B, Mistral-7B |
+| 8B (Qwen3 family) | **36 layers** | **Qwen3-8B** (8.2B params, reasoning + non-thinking modes) |
+| 14B parameters | 48 layers | Qwen2.5-Coder-14B, Phi-4-14B |
+| 32B parameters | 64 layers | Qwen2.5-Coder-32B, Llama-3.3-70B* |
+| 70B parameters | 80 layers | Llama-3.1-70B |
+
+> *Layer counts vary between model families — Qwen3 models in particular use a different architecture than same-size Llama/Mistral variants. The exact value is always listed in the model's `config.json` on Hugging Face, or reported by `llama-server` at startup.
+
+### VRAM Consumption Estimation
+
+Each layer's VRAM cost depends on the model size and quantization format. As a rough approximation:
+
+```
+VRAM per layer ≈ total_model_file_size_GB / total_layer_count
+```
+
+**Practical examples:**
+
+| Model | Quantization | File Size | Layers | VRAM per Layer | Full Offload VRAM |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| 7B | Q4_K_M | ~4.1 GB | 32 | ~128 MB | ~4.5 GB (+ overhead) |
+| **Qwen3-8B** | **Q4_K_M** | **~5.2 GB** | **36** | **~144 MB** | **~6.0 GB (+ overhead)** |
+| **Qwen3-8B** | **Q6_K** | **~6.7 GB** | **36** | **~186 MB** | **~7.5 GB (+ overhead)** |
+| 14B | Q4_K_M | ~8.5 GB | 48 | ~177 MB | ~9.5 GB (+ overhead) |
+| 14B | Q6_K | ~11.0 GB | 48 | ~229 MB | ~12.0 GB (+ overhead) |
+| 32B | Q4_K_M | ~18.0 GB | 64 | ~281 MB | ~20.0 GB (+ overhead) |
+
+> The overhead (~0.5–1.5 GB) accounts for the embedding layer, the output projection, and the KV cache allocated for the context window.
+
+### Comparative Scenarios
+
+The table below shows how `-ngl` affects performance and resource usage for a **14B Q4_K_M** model on a system with 8 GB VRAM:
+
+| `-ngl` Value | Layers on GPU | Layers on CPU | Approx. VRAM Used | Typical Token Generation Speed |
+| :--- | :--- | :--- | :--- | :--- |
+| `0` | 0 / 48 | 48 / 48 | ~0 GB | Baseline (CPU-only) |
+| `16` | 16 / 48 | 32 / 48 | ~3.0 GB | ~1.5–2× faster than baseline |
+| `32` | 32 / 48 | 16 / 48 | ~6.0 GB | ~3–4× faster than baseline |
+| `48` | 48 / 48 | 0 / 48 | ~9.5 GB | Maximum speed — requires ≥10 GB VRAM |
+
+> Speed multipliers are indicative and vary with CPU, RAM bandwidth, and PCIe generation. The TTFT improvement is typically even more pronounced than token generation speed, since the entire prompt must be processed before the first token is produced.
+
+### How to Calibrate the Value
+
+* **Start conservatively** (e.g., `-ngl 16`) and read the VRAM allocation from `llama-server`'s startup logs.
+* **Increase incrementally** until you approach — but do not exceed — your GPU's memory limit. Exceeding it causes the process to crash or fall back silently.
+* For a **full offload**, set `-ngl` to the model's total layer count (e.g., `-ngl 48` for a 14B model). Only attempt this if the model's file size fits within your available VRAM with some headroom for overhead.
 
 **Example command with partial GPU offloading:**
 
