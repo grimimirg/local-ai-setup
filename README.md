@@ -833,6 +833,7 @@ async def _as_sse(data: dict):
     """
     choice = data.get("choices", [{}])[0]
     message = choice.get("message", {})
+    tool_calls = message.get("tool_calls") or []
     base = {
         "id":      data.get("id", ""),
         "object":  "chat.completion.chunk",
@@ -840,7 +841,16 @@ async def _as_sse(data: dict):
         "model":   data.get("model", ""),
     }
     yield f"data: {json.dumps({**base, 'choices': [{'index': 0, 'delta': {'role': 'assistant', 'content': ''}, 'finish_reason': None}]})}\n\n"
-    yield f"data: {json.dumps({**base, 'choices': [{'index': 0, 'delta': {'content': message.get('content', '')}, 'finish_reason': None}]})}\n\n"
+    if tool_calls:
+        tc_delta = [
+            {"index": i, "id": tc.get("id", ""), "type": "function",
+             "function": {"name": tc["function"]["name"], "arguments": tc["function"]["arguments"]}}
+            for i, tc in enumerate(tool_calls)
+        ]
+        logger.debug("  _as_sse: forwarding %d tool_call(s) in SSE delta", len(tc_delta))
+        yield f"data: {json.dumps({**base, 'choices': [{'index': 0, 'delta': {'tool_calls': tc_delta}, 'finish_reason': None}]})}\n\n"
+    else:
+        yield f"data: {json.dumps({**base, 'choices': [{'index': 0, 'delta': {'content': message.get('content', '')}, 'finish_reason': None}]})}\n\n"
     yield f"data: {json.dumps({**base, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': choice.get('finish_reason', 'stop')}]})}\n\n"
     yield "data: [DONE]\n\n"
 
@@ -855,11 +865,23 @@ def _respond(data: dict, status_code: int, as_stream: bool):
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
     body = await request.json()
+    if not body:
+        logger.warning("→ /v1/chat/completions — empty request body received from client")
+        return JSONResponse({"error": {"message": "empty request body", "type": "proxy_error"}}, status_code=400)
 
     # Remember whether the client wants a streaming response
     client_wants_stream = body.get("stream", False)
+    messages = body.get("messages", [])
+    if not messages:
+        logger.warning("→ /v1/chat/completions — request has no messages (empty conversation)")
     logger.info("→ /v1/chat/completions | stream=%s | messages=%d",
-                client_wants_stream, len(body.get("messages", [])))
+                client_wants_stream, len(messages))
+    for m in reversed(messages):
+        if m.get("role") == "user":
+            content = m.get("content", "")
+            preview = content[:300].replace("\n", " ") if isinstance(content, str) else repr(content)[:300]
+            logger.info("  prompt: %s%s", preview, " [...]" if len(str(content)) > 300 else "")
+            break
 
     # Force non-streaming for the tool loop; the final response is returned in full
     body["stream"] = False
@@ -881,6 +903,9 @@ async def chat_completions(request: Request):
         async with httpx.AsyncClient(timeout=300) as client:
             for loop_i in range(MAX_LOOPS):
                 logger.debug("  [loop %d/%d] sending request to backend", loop_i + 1, MAX_LOOPS)
+                logger.debug("  → backend | model=%s | messages=%d | tools=%d",
+                             body.get("model", "?"), len(body.get("messages", [])),
+                             len(body.get("tools", [])))
                 resp = await client.post(
                     f"{BACKEND_URL}/v1/chat/completions", json=body
                 )
@@ -895,17 +920,47 @@ async def chat_completions(request: Request):
                         media_type=resp.headers.get("content-type", "application/octet-stream"),
                     )
 
+                if not data:
+                    logger.warning("  [loop %d/%d] backend returned empty JSON body", loop_i + 1, MAX_LOOPS)
+                if not data.get("choices"):
+                    logger.warning("  [loop %d/%d] backend response has no 'choices' field — raw: %.300s",
+                                   loop_i + 1, MAX_LOOPS, str(data))
+
                 choice     = data.get("choices", [{}])[0]
                 message    = choice.get("message", {})
+                if not message:
+                    logger.warning("  [loop %d/%d] backend choice has empty 'message'", loop_i + 1, MAX_LOOPS)
                 tool_calls = message.get("tool_calls") or []
 
                 if not tool_calls:
                     # No tool call — the model produced a final text answer
-                    logger.info("← final answer | loop=%d | stream=%s | status=%d",
-                                loop_i + 1, client_wants_stream, resp.status_code)
+                    final_content = message.get("content") or ""
+                    if not final_content:
+                        logger.warning("← final answer has empty content — model returned no text and no tool calls")
+                    logger.info("← final answer | loop=%d | stream=%s | status=%d | chars=%d",
+                                loop_i + 1, client_wants_stream, resp.status_code, len(final_content))
+                    logger.debug("  ← answer preview: %s%s",
+                                 final_content[:300].replace("\n", " "),
+                                 " [...]" if len(final_content) > 300 else "")
                     return _respond(data, resp.status_code, client_wants_stream)
 
-                # Execute every tool call the model requested
+                # If the model called a tool the proxy doesn't own, pass the
+                # response back to the client immediately. Clients like Crush
+                # send their own tools in the request; the proxy must not try
+                # to handle those — the client will execute them and send the
+                # result in the next request.
+                unknown = [tc["function"]["name"] for tc in tool_calls
+                           if tc["function"]["name"] not in TOOL_HANDLERS]
+                if unknown:
+                    logger.info("  [loop %d/%d] client-owned tool(s) %s — passing through",
+                                loop_i + 1, MAX_LOOPS, unknown)
+                    for tc in tool_calls:
+                        if tc["function"]["name"] in unknown:
+                            logger.debug("    ↳ tool=%s args=%.300s",
+                                         tc["function"]["name"], tc["function"].get("arguments", ""))
+                    return _respond(data, resp.status_code, client_wants_stream)
+
+                # All tool calls are proxy-owned — execute them
                 body["messages"].append(message)
                 for tc in tool_calls:
                     fn_name = tc["function"]["name"]
@@ -917,14 +972,12 @@ async def chat_completions(request: Request):
                     logger.info("  [loop %d/%d] tool call: %s | args=%s",
                                 loop_i + 1, MAX_LOOPS, fn_name, fn_args)
 
-                    if fn_name in TOOL_HANDLERS:
-                        result = await asyncio.get_running_loop().run_in_executor(
-                            None, TOOL_HANDLERS[fn_name], fn_args
-                        )
-                    else:
-                        logger.warning("  unknown tool requested: %s", fn_name)
-                        result = f"Unknown tool requested: {fn_name}"
-
+                    result = await asyncio.get_running_loop().run_in_executor(
+                        None, TOOL_HANDLERS[fn_name], fn_args
+                    )
+                    if not result or not result.strip():
+                        logger.warning("  [loop %d/%d] tool '%s' returned empty result",
+                                       loop_i + 1, MAX_LOOPS, fn_name)
                     logger.debug("  tool result (%d chars): %.120s", len(result), result)
 
                     body["messages"].append({
