@@ -1,3 +1,17 @@
+> [!IMPORTANT]
+> ## This GitHub repository has reached its end of life
+>
+> Development has moved to my self-hosted Gitea instance, and further
+> improvements will only land there:
+>
+> ### 👉 https://git.grimilab.duckdns.org/andreagrimandi/local-ai-setup
+>
+> This copy stays online for reference, but it is **no longer updated**, and
+> issues or pull requests opened here will not be picked up. Please switch to
+> the repository above to follow the project.
+
+---
+
 # Local AI Development Environment Setup
 
 **Complete Step-by-Step Deployment Guide: llama.cpp Backend — Aider & Crush Frontends — GPU Acceleration**  
